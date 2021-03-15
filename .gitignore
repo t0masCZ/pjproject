@@ -67,3 +67,8 @@ tests/pjsua/wavs/tmp*.wav
 tests/pjsua/tools/cmp_wav
 tests/pjsua/tools/cmp_wav.dSYM
 tests/pjsua/logs
+
+# IntelliJ Idea
+target/
+.idea/
+pjsip.iml
