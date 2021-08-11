@@ -25,7 +25,29 @@
         </profile>
     </profiles>
 
+    <repositories>
+        <repository>
+            <id>t0mas.pjsip</id>
+            <url>https://t0mas.pkgs.visualstudio.com/pjsip/_packaging/t0mas.pjsip/maven/v1</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <distributionManagement>
+        <repository>
+            <id>t0mas.pjsip</id>
+            <url>https://t0mas.pkgs.visualstudio.com/pjsip/_packaging/t0mas.pjsip/maven/v1</url>
+        </repository>
+    </distributionManagement>
+
     <build>
+        <sourceDirectory>${project.build.directory}/generated-sources</sourceDirectory>
+
         <plugins>
 
             <plugin>
@@ -57,7 +79,7 @@
 
                     <execution>
                         <id>compile</id>
-                        <phase>compile</phase>
+                        <phase>generate-sources</phase>
                         <configuration>
                             <target>
                                 <exec executable="mvn/compile.sh" failonerror="true" />
@@ -68,6 +90,33 @@
                         </goals>
                     </execution>
 
+
+                    <execution>
+                        <id>process-sources</id>
+                        <phase>process-sources</phase>
+                        <configuration>
+                            <target>
+                                <copy todir="${project.build.directory}/generated-sources">
+                                    <fileset dir="pjsip-apps/src/swig/java/output">
+                                        <include name="**/*.java" />
+                                        <exclude name="**/app/*" />
+                                        <exclude name="*.java" />
+                                    </fileset>
+                                </copy>
+
+                                <copy todir="${project.build.outputDirectory}">
+                                    <fileset dir="pjsip-apps/src/swig/java/output">
+                                        <include name="*.so" />
+                                    </fileset>
+                                </copy>
+                            </target>
+                        </configuration>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                    </execution>
+
+
                     <execution>
                         <id>prepare-package</id>
                         <phase>prepare-package</phase>
@@ -77,17 +126,6 @@
                                     <fileset dir=".">
                                         <include name="**/*.a" />
                                         <exclude name="${lib-dir}/*" />
-                                    </fileset>
-                                </copy>
-
-                                <copy todir="${project.build.outputDirectory}">
-                                    <fileset dir="pjsip-apps/src/swig/java/output">
-                                        <include name="**/*.class" />
-                                        <include name="**/*.java" />
-                                        <include name="*.so" />
-                                        <exclude name="**/app/*" />
-                                        <exclude name="*.class" />
-                                        <exclude name="*.java" />
                                     </fileset>
                                 </copy>
                             </target>

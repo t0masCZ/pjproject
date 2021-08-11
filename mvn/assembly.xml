@@ -17,6 +17,10 @@
 			<includes>
 				<include>**/*.h</include>
 			</includes>
+			<excludes>
+				<exclude>**/docs/**/*.h</exclude>
+				<exclude>**/src/**/*.h</exclude>
+			</excludes>
 			<outputDirectory>include</outputDirectory>
 		</fileSet>
 	</fileSets>

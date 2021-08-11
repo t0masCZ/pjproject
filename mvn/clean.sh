@@ -17,3 +17,4 @@ rm -f pjsip/build/os-auto.mak
 rm -f third_party/build/os-auto.mak
 rm -f pjlib/include/pj/compat/os_auto.h
 rm -f pjsip/include/pjsip/sip_autoconf.h
+rm -rf pjsip-apps/src/swig/java/output
