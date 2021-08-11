@@ -10,7 +10,6 @@ pool:
   vmImage: ubuntu-latest
 
 steps:
-- script: apt install libopus-dev
 - task: Maven@3
   inputs:
     mavenPomFile: 'pom.xml'
