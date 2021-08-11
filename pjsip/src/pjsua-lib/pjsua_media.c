@@ -854,8 +854,8 @@ static void on_ice_complete(pjmedia_transport *tp,
         }
 
 	/* Stop trickling */
-	if (call->trickle_ice.trickling) {
-	    call->trickle_ice.trickling = PJ_FALSE;
+	if (call->trickle_ice.trickling < PJSUA_OP_STATE_DONE) {
+	    call->trickle_ice.trickling = PJSUA_OP_STATE_DONE;
 	    pjsua_cancel_timer(&call->trickle_ice.timer);
 	    PJ_LOG(4,(THIS_FILE, "Call %d: ICE trickle stopped trickling as "
 		      "ICE nego completed",
@@ -987,7 +987,10 @@ static pj_status_t create_ice_media_transport(
     }
 
     /* Should not wait for ICE STUN/TURN ready when trickle ICE is enabled */
-    if (ice_cfg.opt.trickle != PJ_ICE_SESS_TRICKLE_DISABLED) {
+    if (ice_cfg.opt.trickle != PJ_ICE_SESS_TRICKLE_DISABLED &&
+	(call_med->call->inv == NULL || 
+	 call_med->call->inv->state < PJSIP_INV_STATE_CONFIRMED))
+    {
 	if (rem_sdp) {
 	    /* As answerer: and when remote signals trickle ICE in SDP */
 	    trickle = pjmedia_ice_sdp_has_trickle(rem_sdp, call_med->idx);
@@ -1002,7 +1005,10 @@ static pj_status_t create_ice_media_transport(
 	}
 
 	/* Check if trickle ICE can start trickling/sending SIP INFO */
-	pjsua_ice_check_start_trickling(call_med->call, NULL);
+	pjsua_ice_check_start_trickling(call_med->call, PJ_FALSE, NULL);
+    } else {
+	/* For non-initial INVITE, always use regular ICE */
+	ice_cfg.opt.trickle = PJ_ICE_SESS_TRICKLE_DISABLED;
     }
 
     /* If STUN transport is configured, initialize STUN transport settings */
@@ -2461,6 +2467,20 @@ pj_status_t pjsua_media_channel_init(pjsua_call_id call_id,
 	    }
 	}
 
+	if (call->opt.flag & PJSUA_CALL_SET_MEDIA_DIR) {
+	    call_med->def_dir = call->opt.media_dir[mi];
+    	    PJ_LOG(4,(THIS_FILE, "Call %d: setting media direction "
+    	    			 "#%d to %d.", call_id, mi,
+    	    			 call_med->def_dir));
+	} else if (!reinit) {
+	    /* Initialize default initial media direction as bidirectional */
+	    call_med->def_dir = PJMEDIA_DIR_ENCODING_DECODING;
+	}
+	call_med->dir = call_med->def_dir;
+	if (call_med->dir == PJMEDIA_DIR_NONE) {
+	    enabled = PJ_FALSE;
+	}
+
 	if (enabled) {
 	    call_med->enable_rtcp_mux = acc->cfg.enable_rtcp_mux;
 
@@ -2492,6 +2512,21 @@ pj_status_t pjsua_media_channel_init(pjsua_call_id call_id,
 
 		goto on_error;
 	    }
+
+	    /* Find and save "a=mid". Currently this is for trickle ICE.
+	     * Trickle ICE match media in SDP of SIP INFO by comparing this
+	     * attribute, so remote SDP must be received first before remote
+	     * SDP in SIP INFO can be processed.
+	     */
+	    if (rem_sdp && call_med->rem_mid.slen == 0) {
+		const pjmedia_sdp_media *m = rem_sdp->media[mi];
+		pjmedia_sdp_attr *a;
+
+		a = pjmedia_sdp_media_find_attr2(m, "mid", NULL);
+		if (a)
+		    call_med->rem_mid = a->value;
+	    }
+
 	} else {
 	    /* By convention, the media is disabled if transport is NULL 
 	     * or transport state is PJSUA_MED_TP_DISABLED.
@@ -2657,6 +2692,7 @@ pj_status_t pjsua_media_channel_create_sdp(pjsua_call_id call_id,
 	pjsua_call_media *call_med = &call->media_prov[mi];
 	pjmedia_sdp_media *m = NULL;
 	pjmedia_transport_info tpinfo;
+	pjmedia_endpt_create_sdp_param param;
 	unsigned i;
 
 	if (rem_sdp && mi >= rem_sdp->media_count) {
@@ -2752,15 +2788,19 @@ pj_status_t pjsua_media_channel_create_sdp(pjsua_call_id call_id,
 	pjmedia_transport_get_info(call_med->tp, &tpinfo);
 
 	/* Ask pjmedia endpoint to create SDP media line */
+	pjmedia_endpt_create_sdp_param_default(&param);
+	param.dir = call_med->dir;
 	switch (call_med->type) {
 	case PJMEDIA_TYPE_AUDIO:
 	    status = pjmedia_endpt_create_audio_sdp(pjsua_var.med_endpt, pool,
-                                                    &tpinfo.sock_info, 0, &m);
+                                                    &tpinfo.sock_info,
+                                                    &param, &m);
 	    break;
 #if defined(PJMEDIA_HAS_VIDEO) && (PJMEDIA_HAS_VIDEO != 0)
 	case PJMEDIA_TYPE_VIDEO:
 	    status = pjmedia_endpt_create_video_sdp(pjsua_var.med_endpt, pool,
-	                                            &tpinfo.sock_info, 0, &m);
+	                                            &tpinfo.sock_info,
+	                                            &param, &m);
 	    break;
 #endif
 	default:
@@ -2874,6 +2914,19 @@ pj_status_t pjsua_media_channel_create_sdp(pjsua_call_id call_id,
 				 call_id, mi));
 		}
 	    }
+	}
+
+	/* Find and save "a=mid". Currently this is for trickle ICE. Trickle
+	 * ICE match media in SDP of SIP INFO by comparing this attribute,
+	 * so remote SDP must be received first before remote SDP in SIP INFO
+	 * can be processed.
+	 */
+	if (call_med->rem_mid.slen == 0) {
+	    pjmedia_sdp_attr *a;
+
+	    a = pjmedia_sdp_media_find_attr2(m, "mid", NULL);
+	    if (a)
+		call_med->rem_mid = a->value;
 	}
     }
 
@@ -3089,10 +3142,14 @@ pj_status_t pjsua_media_channel_deinit(pjsua_call_id call_id)
     stop_media_session(call_id);
 
     /* Stop trickle ICE timer */
-    if (call->trickle_ice.trickling) {
-	call->trickle_ice.trickling = PJ_FALSE;
+    if (call->trickle_ice.trickling > PJSUA_OP_STATE_NULL) {
+	call->trickle_ice.trickling = PJSUA_OP_STATE_NULL;
 	pjsua_cancel_timer(&call->trickle_ice.timer);
     }
+    call->trickle_ice.enabled = PJ_FALSE;
+    call->trickle_ice.pending_info = PJ_FALSE;
+    call->trickle_ice.remote_sup = PJ_FALSE;
+    call->trickle_ice.retrans18x_count = 0;
 
     /* Clean up media transports */
     pjsua_media_prov_clean_up(call_id);
@@ -3427,7 +3484,11 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 
     /* Process each media stream */
     for (mi=0; mi < call->med_cnt; ++mi) {
-	pjsua_call_media *call_med = &call->media[mi];
+    	const char *STR_SENDRECV = "sendrecv";
+    	const char *STR_SENDONLY = "sendonly";
+     	const char *STR_RECVONLY = "recvonly";
+     	const char *STR_INACTIVE = "inactive";
+     	pjsua_call_media *call_med = &call->media[mi];
 	pj_bool_t media_changed = PJ_FALSE;
 
 	if (mi >= local_sdp->media_count ||
@@ -3454,22 +3515,6 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 	    status = PJMEDIA_SDP_EINSDP;
 	    goto on_error;
 #endif
-	}
-
-	/* Find and save "a=mid". Currently this is for trickle ICE. Trickle
-	 * ICE match media in SDP of SIP INFO by comparing this attribute,
-	 * so remote SDP must be received first before remote SDP in SIP INFO
-	 * can be processed.
-	 */
-	{
-	    const pjmedia_sdp_media *m = remote_sdp->media[mi];
-	    pjmedia_sdp_attr *a;
-
-	    a = pjmedia_sdp_media_find_attr2(m, "mid", NULL);
-	    if (a)
-		call_med->rem_mid = a->value;
-	    else
-		pj_bzero(&call_med->rem_mid, sizeof(call_med->rem_mid));
 	}
 
 	/* Apply media update action */
@@ -3510,6 +3555,63 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 	    if (pjsua_var.media_cfg.no_vad && si->param) {
 	        si->param->setting.vad = 0;
 	    }
+
+	    if (!pjmedia_sdp_neg_was_answer_remote(call->inv->neg) &&
+	    	si->dir != PJMEDIA_DIR_NONE)
+	    {
+    		pjmedia_dir dir = si->dir;
+    		
+    		if (call->opt.flag & PJSUA_CALL_SET_MEDIA_DIR) {
+    		    call_med->def_dir = call->opt.media_dir[mi];
+    		    PJ_LOG(4,(THIS_FILE, "Call %d: setting audio media "
+    		    			 "direction #%d to %d.",
+			  		 call_id, mi, call_med->def_dir));
+    		}
+
+ 		/* If the default direction specifies we do not wish
+ 		 * encoding/decoding, clear that direction.
+ 		 */
+     		if ((call_med->def_dir & PJMEDIA_DIR_ENCODING) == 0) {
+ 		    dir &= ~PJMEDIA_DIR_ENCODING;
+     		}
+     		if ((call_med->def_dir & PJMEDIA_DIR_DECODING) == 0) {
+ 		    dir &= ~PJMEDIA_DIR_DECODING;
+     		}
+
+     		if (dir != si->dir) {
+     		    const char *str_attr = NULL;
+ 	    	    pjmedia_sdp_attr *attr;
+ 	    	    pjmedia_sdp_media *m;
+
+     		    if (!need_renego_sdp) {
+ 			pjmedia_sdp_session *local_sdp_renego;
+ 			local_sdp_renego =
+ 			    pjmedia_sdp_session_clone(tmp_pool, local_sdp);
+ 			local_sdp = local_sdp_renego;
+ 			need_renego_sdp = PJ_TRUE;
+     		    }
+
+     		    si->dir = dir;
+     		    m = local_sdp->media[mi];
+
+ 	    	    /* Remove existing directions attributes */
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_SENDRECV);
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_SENDONLY);
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_RECVONLY);
+
+ 		    if (si->dir == PJMEDIA_DIR_ENCODING_DECODING) {
+ 		    	str_attr = STR_SENDRECV;
+ 		    } else if (si->dir == PJMEDIA_DIR_ENCODING) {
+ 		    	str_attr = STR_SENDONLY;
+ 		    } else if (si->dir == PJMEDIA_DIR_DECODING) {
+ 		    	str_attr = STR_RECVONLY;
+ 		    } else {
+ 		    	str_attr = STR_INACTIVE;
+ 		    }
+ 		    attr = pjmedia_sdp_attr_create(tmp_pool, str_attr, NULL);
+ 		    pjmedia_sdp_media_add_attr(m, attr);
+ 		}
+     	    }
 
 	    /* Check if this media is changed */
 	    stream_info.type = PJMEDIA_TYPE_AUDIO;
@@ -3688,6 +3790,63 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 	        si->rtcp_mux = PJ_FALSE;
 	    }
 
+	    if (!pjmedia_sdp_neg_was_answer_remote(call->inv->neg) &&
+	    	si->dir != PJMEDIA_DIR_NONE)
+	    {
+    		pjmedia_dir dir = si->dir;
+    		
+    		if (call->opt.flag & PJSUA_CALL_SET_MEDIA_DIR) {
+    		    call_med->def_dir = call->opt.media_dir[mi];
+    		    PJ_LOG(4,(THIS_FILE, "Call %d: setting video media "
+    		    			 "direction #%d to %d.",
+			  		 call_id, mi, call_med->def_dir));
+    		}
+
+ 		/* If the default direction specifies we do not wish
+ 		 * encoding/decoding, clear that direction.
+ 		 */
+     		if ((call_med->def_dir & PJMEDIA_DIR_ENCODING) == 0) {
+ 		    dir &= ~PJMEDIA_DIR_ENCODING;
+     		}
+     		if ((call_med->def_dir & PJMEDIA_DIR_DECODING) == 0) {
+ 		    dir &= ~PJMEDIA_DIR_DECODING;
+     		}
+
+     		if (dir != si->dir) {
+     		    const char *str_attr = NULL;
+ 	    	    pjmedia_sdp_attr *attr;
+ 	    	    pjmedia_sdp_media *m;
+
+     		    if (!need_renego_sdp) {
+ 			pjmedia_sdp_session *local_sdp_renego;
+ 			local_sdp_renego =
+ 			    pjmedia_sdp_session_clone(tmp_pool, local_sdp);
+ 			local_sdp = local_sdp_renego;
+ 			need_renego_sdp = PJ_TRUE;
+     		    }
+
+     		    si->dir = dir;
+     		    m = local_sdp->media[mi];
+
+ 	    	    /* Remove existing directions attributes */
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_SENDRECV);
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_SENDONLY);
+ 	    	    pjmedia_sdp_media_remove_all_attr(m, STR_RECVONLY);
+
+ 		    if (si->dir == PJMEDIA_DIR_ENCODING_DECODING) {
+ 		    	str_attr = STR_SENDRECV;
+ 		    } else if (si->dir == PJMEDIA_DIR_ENCODING) {
+ 		    	str_attr = STR_SENDONLY;
+ 		    } else if (si->dir == PJMEDIA_DIR_DECODING) {
+ 		    	str_attr = STR_RECVONLY;
+ 		    } else {
+ 		    	str_attr = STR_INACTIVE;
+ 		    }
+ 		    attr = pjmedia_sdp_attr_create(tmp_pool, str_attr, NULL);
+ 		    pjmedia_sdp_media_add_attr(m, attr);
+ 		}
+     	    }
+
 	    /* Check if this media is changed */
 	    stream_info.type = PJMEDIA_TYPE_VIDEO;
 	    stream_info.info.vid = the_si;
@@ -3746,7 +3905,7 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 		    call_med->rem_srtp_use = srtp_info->peer_use;
 		}
 
-		/* Update audio channel */
+		/* Update video channel */
 		if (media_changed) {
 		    status = pjsua_vid_channel_update(call_med,
 						      call->inv->pool, si,
