@@ -22,6 +22,6 @@ steps:
     goals: 'package'
 - task: PublishPipelineArtifact@1
   inputs:
-    targetPath: '$(Pipeline.Workspace)/target/pjsip*.zip'
-    artifact: 'pjsip.zip'
+    targetPath: '$(Pipeline.Workspace)/target'
+    artifact: 'pjsip*.zip'
     publishLocation: 'pipeline'
