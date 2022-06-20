@@ -119,16 +119,17 @@ static void scan_closing_keys(pj_ioqueue_t *ioqueue);
 
 #  include <openssl/opensslv.h>
 #  if OPENSSL_VERSION_NUMBER < 0x10100000L
-#    define DONT_USE_EXCL_ONESHOT
+#    undef PJ_IOQUEUE_EPOLL_ENABLE_EXCLUSIVE_ONESHOT
+#    define PJ_IOQUEUE_EPOLL_ENABLE_EXCLUSIVE_ONESHOT	0
 #  endif
 
 #endif
 
 /* Use EPOLLEXCLUSIVE or EPOLLONESHOT to signal one thread only at a time. */
-#if defined(EPOLLEXCLUSIVE) && !defined(DONT_USE_EXCL_ONESHOT)
+#if defined(EPOLLEXCLUSIVE) && PJ_IOQUEUE_EPOLL_ENABLE_EXCLUSIVE_ONESHOT
 #  define USE_EPOLLEXCLUSIVE	1
 #  define USE_EPOLLONESHOT	0
-#elif defined(EPOLLONESHOT) && !defined(DONT_USE_EXCL_ONESHOT)
+#elif defined(EPOLLONESHOT) && PJ_IOQUEUE_EPOLL_ENABLE_EXCLUSIVE_ONESHOT
 #  define USE_EPOLLEXCLUSIVE	0
 #  define USE_EPOLLONESHOT	1
 #else
@@ -231,6 +232,7 @@ PJ_DEF(pj_status_t) pj_ioqueue_create( pj_pool_t *pool,
 
     ioqueue->epfd = os_epoll_create(max_fd);
     if (ioqueue->epfd < 0) {
+    	pj_lock_acquire(ioqueue->lock);
 	ioqueue_destroy(ioqueue);
 	return PJ_RETURN_OS_ERROR(pj_get_native_os_error());
     }
@@ -492,10 +494,17 @@ PJ_DEF(pj_status_t) pj_ioqueue_unregister( pj_ioqueue_key_t *key)
     ev.epoll_data = (epoll_data_type)key;
     status = os_epoll_ctl( ioqueue->epfd, EPOLL_CTL_DEL, key->fd, &ev);
     if (status != 0) {
-	pj_status_t rc = pj_get_os_error();
-	pj_lock_release(ioqueue->lock);
-	pj_ioqueue_unlock_key(key);
-	return rc;
+        // pj_status_t rc = pj_get_os_error();
+        TRACE_((THIS_FILE,
+                "pj_ioqueue_unregister error: os_epoll_ctl rc=%d",
+                pj_get_os_error()));
+        /* From epoll doc: "Closing a file descriptor cause it to be
+         * removed from all epoll interest lists". So we should just
+         * proceed instead of returning failure here.
+         */
+        // pj_lock_release(ioqueue->lock);
+        // pj_ioqueue_unlock_key(key);
+        // return rc;
     }
 
     /* Destroy the key. */
@@ -577,20 +586,11 @@ static void ioqueue_remove_from_set( pj_ioqueue_t *ioqueue,
                                      pj_ioqueue_key_t *key, 
                                      enum ioqueue_event_type event_type)
 {
-#if USE_EPOLLONESHOT
-    /* For EPOLLONESHOT, always rearm ioqueue for events. */
-    PJ_UNUSED_ARG(event_type);
-    pj_uint32_t ev = EPOLLIN | EPOLLERR;
-    if (key_has_pending_write(key))
-	ev |= EPOLLOUT;
-    update_epoll_event_set(ioqueue, key, ev);
-#else
     /* Remove EPOLLOUT if write event received and no pending send */
     if (event_type == WRITEABLE_EVENT && !key_has_pending_write(key)) {
 	pj_uint32_t ev = EPOLLIN | EPOLLERR;
 	update_epoll_event_set(ioqueue, key, ev);
     }
-#endif
 }
 
 /*
@@ -603,6 +603,14 @@ static void ioqueue_add_to_set( pj_ioqueue_t *ioqueue,
                                 pj_ioqueue_key_t *key,
                                 enum ioqueue_event_type event_type )
 {
+#if USE_EPOLLONESHOT
+    /* For EPOLLONESHOT, always rearm ioqueue for events. */
+    PJ_UNUSED_ARG(event_type);
+    pj_uint32_t ev = EPOLLIN | EPOLLERR;
+    if (key_has_pending_connect(key) || key_has_pending_write(key))
+	ev |= EPOLLOUT;
+    update_epoll_event_set(ioqueue, key, ev);
+#else
     /* Add EPOLLOUT if write-event requested (other events are always set) */
     if (event_type == WRITEABLE_EVENT) {
 	pj_uint32_t ev = EPOLLIN | EPOLLERR;
@@ -611,6 +619,7 @@ static void ioqueue_add_to_set( pj_ioqueue_t *ioqueue,
 
 	update_epoll_event_set(ioqueue, key, ev);
     }
+#endif
 }
 
 #if PJ_IOQUEUE_HAS_SAFE_UNREG
@@ -786,22 +795,27 @@ PJ_DEF(int) pj_ioqueue_poll( pj_ioqueue_t *ioqueue, const pj_time_val *timeout)
 
 	/* Just do not exceed PJ_IOQUEUE_MAX_EVENTS_IN_SINGLE_POLL */
 	if (processed_cnt < PJ_IOQUEUE_MAX_EVENTS_IN_SINGLE_POLL) {
+	    pj_bool_t event_done = PJ_FALSE;
 	    switch (queue[i].event_type) {
 	    case READABLE_EVENT:
-		if (ioqueue_dispatch_read_event(ioqueue, queue[i].key))
-		    ++processed_cnt;
+		event_done = ioqueue_dispatch_read_event(ioqueue,queue[i].key);
+
 		break;
 	    case WRITEABLE_EVENT:
-		if (ioqueue_dispatch_write_event(ioqueue, queue[i].key))
-		    ++processed_cnt;
+		event_done = ioqueue_dispatch_write_event(ioqueue,
+							  queue[i].key);
+
 		break;
 	    case EXCEPTION_EVENT:
-		if (ioqueue_dispatch_exception_event(ioqueue, queue[i].key))
-		    ++processed_cnt;
+		event_done = ioqueue_dispatch_exception_event(ioqueue,
+							      queue[i].key);
 		break;
 	    case NO_EVENT:
 		pj_assert(!"Invalid event!");
 		break;
+	    }
+	    if (event_done) {
+		++processed_cnt;
 	    }
 	}
 
@@ -814,11 +828,52 @@ PJ_DEF(int) pj_ioqueue_poll( pj_ioqueue_t *ioqueue, const pj_time_val *timeout)
 	                            "ioqueue", 0);
     }
 
+#if USE_EPOLLONESHOT
+    /* When using EPOLLONESHOT, we will receive one-shot notification for
+     * the associated file descriptor, after which the file descriptor
+     * is disabled in the interest list and no other events will be
+     * reported.
+     * Note the following cases can happen:
+     * - we do not want to process a reported event (i.e. event_cnt < count)
+     * - we process the event, but the processing doesn't rearm the file
+     *   descriptor (such as during processing failure)
+     * So we need to make sure to rearm the file descriptor here with
+     * a new event mask.
+     */
+    for (i=0; i<count; ++i) {
+        pj_ioqueue_key_t *h = (pj_ioqueue_key_t*)(epoll_data_type)
+                              events[i].epoll_data;
+
+        pj_ioqueue_lock_key(h);
+        if (!IS_CLOSING(h))
+            ioqueue_add_to_set(ioqueue, h, 0);
+        pj_ioqueue_unlock_key(h);
+    }
+#endif
+
     /* Special case:
-     * When epoll returns > 0 but no descriptors are actually set!
+     * When epoll returns > 0 but event_cnt, the number of events
+     * we want to process, is zero.
+     * There are several possibilities this can happen:
+     * - Multiple polling threads can receive the same event
+     *   (if not EXCLUSIVE nor ONESHOT), and only one thread will
+     *   process it.
+     * - Events EPOLLIN is always on, while EPOLLERR and EPOLLHUP
+     *   will always be automatically reported even though we
+     *   never specifically asked for them.
      */
     if (count > 0 && !event_cnt && msec > 0) {
-	pj_thread_sleep(msec);
+#if !USE_EPOLLEXCLUSIVE && !USE_EPOLLONESHOT
+        /* We need to sleep in order to avoid busy polling, such
+         * as in the case of the thread that doesn't process
+         * the event as explained above.
+         * Note that the sleep period should be reduced by
+         * the amount of time already used for epoll_wait().
+         */
+	int delay = msec - pj_elapsed_usec(&t1, &t2)/1000;
+        if (delay > 0)
+	    pj_thread_sleep(delay);
+#endif
     }
 
     TRACE_((THIS_FILE, "     poll: count=%d events=%d processed=%d",

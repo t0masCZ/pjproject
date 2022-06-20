@@ -379,6 +379,7 @@ PJ_DEF(void) pjsua_acc_config_default(pjsua_acc_config *cfg)
     cfg->ip_change_cfg.reinvite_flags = PJSUA_CALL_REINIT_MEDIA |
 					PJSUA_CALL_UPDATE_CONTACT |
 					PJSUA_CALL_UPDATE_VIA;
+    cfg->enable_rtcp_xr = (PJMEDIA_HAS_RTCP_XR && PJMEDIA_STREAM_ENABLE_XR);
 }
 
 PJ_DEF(void) pjsua_buddy_config_default(pjsua_buddy_config *cfg)
@@ -3126,7 +3127,8 @@ void pjsua_init_tpselector(pjsua_transport_id tp_id,
     if (tp_id == PJSUA_INVALID_ID)
 	return;
 
-    pj_assert(tp_id >= 0 && tp_id < (int)PJ_ARRAY_SIZE(pjsua_var.tpdata));
+    PJ_ASSERT_RETURN(tp_id >= 0 && 
+		     tp_id < (int)PJ_ARRAY_SIZE(pjsua_var.tpdata), );
     tpdata = &pjsua_var.tpdata[tp_id];
 
     flag = pjsip_transport_get_flag_from_type(tpdata->type);
@@ -3442,8 +3444,10 @@ PJ_DEF(void) pjsua_dump(pj_bool_t detail)
     old_decor = pj_log_get_decor();
     pj_log_set_decor(old_decor & (PJ_LOG_HAS_NEWLINE | PJ_LOG_HAS_CR));
 
-    if (detail)
+    if (detail) {
 	pj_dump_config();
+	pjsip_dump_config();
+    }
 
     pjsip_endpt_dump(pjsua_get_pjsip_endpt(), detail);
 

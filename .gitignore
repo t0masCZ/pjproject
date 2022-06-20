@@ -73,3 +73,6 @@ tests/pjsua/logs
 target/
 .idea/
 pjsip.iml
+
+# benchmark output
+*bench*.htm

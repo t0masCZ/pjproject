@@ -160,15 +160,15 @@ static void digestNtoStr(const unsigned char digest[], int n, char *output)
  * Create response digest based on the parameters and store the
  * digest ASCII in 'result'.
  */
-PJ_DEF(void) pjsip_auth_create_digest( pj_str_t *result,
-				       const pj_str_t *nonce,
-				       const pj_str_t *nc,
-				       const pj_str_t *cnonce,
-				       const pj_str_t *qop,
-				       const pj_str_t *uri,
-				       const pj_str_t *realm,
-				       const pjsip_cred_info *cred_info,
-				       const pj_str_t *method)
+PJ_DEF(pj_status_t) pjsip_auth_create_digest( pj_str_t *result,
+					      const pj_str_t *nonce,
+					      const pj_str_t *nc,
+					      const pj_str_t *cnonce,
+					      const pj_str_t *qop,
+					      const pj_str_t *uri,
+					      const pj_str_t *realm,
+					      const pjsip_cred_info *cred_info,
+					      const pj_str_t *method)
 {
     char ha1[PJSIP_MD5STRLEN];
     char ha2[PJSIP_MD5STRLEN];
@@ -194,10 +194,18 @@ PJ_DEF(void) pjsip_auth_create_digest( pj_str_t *result,
 	digestNtoStr(digest, 16, ha1);
 
     } else if ((cred_info->data_type & PASSWD_MASK) == PJSIP_CRED_DATA_DIGEST) {
-	pj_assert(cred_info->data.slen == 32);
+	if (cred_info->data.slen != 32) {
+	    pj_assert(!"Invalid cred_info data length");
+	    pj_bzero(result->ptr, result->slen);
+	    result->slen = 0;
+	    return PJ_EINVAL;
+	}
 	pj_memcpy( ha1, cred_info->data.ptr, cred_info->data.slen );
     } else {
 	pj_assert(!"Invalid data_type");
+	pj_bzero(result->ptr, result->slen);
+	result->slen = 0;
+	return PJ_EINVAL;
     }
 
     AUTH_TRACE_((THIS_FILE, "  ha1=%.32s", ha1));
@@ -245,6 +253,7 @@ PJ_DEF(void) pjsip_auth_create_digest( pj_str_t *result,
 
     AUTH_TRACE_((THIS_FILE, "  digest=%.32s", result->ptr));
     AUTH_TRACE_((THIS_FILE, "Digest created"));
+    return PJ_SUCCESS;
 }
 
 
@@ -252,7 +261,7 @@ PJ_DEF(void) pjsip_auth_create_digest( pj_str_t *result,
  * Create response SHA-256 digest based on the parameters and store the
  * digest ASCII in 'result'.
  */
-PJ_DEF(void) pjsip_auth_create_digestSHA256(pj_str_t *result,
+PJ_DEF(pj_status_t) pjsip_auth_create_digestSHA256(pj_str_t *result,
 					    const pj_str_t *nonce,
 					    const pj_str_t *nc,
 					    const pj_str_t *cnonce,
@@ -291,10 +300,18 @@ PJ_DEF(void) pjsip_auth_create_digestSHA256(pj_str_t *result,
 
     } else if ((cred_info->data_type & PASSWD_MASK) == PJSIP_CRED_DATA_DIGEST)
     {
-	pj_assert(cred_info->data.slen == 32);
+	if (cred_info->data.slen != 64) {
+	    pj_assert(!"Invalid cred_info data length");
+	    pj_bzero(result->ptr, result->slen);
+	    result->slen = 0;
+	    return PJ_EINVAL;
+	}
 	pj_memcpy( ha1, cred_info->data.ptr, cred_info->data.slen );
     } else {
 	pj_assert(!"Invalid data_type");
+	pj_bzero(result->ptr, result->slen);
+	result->slen = 0;
+	return PJ_EINVAL;
     }
 
     AUTH_TRACE_((THIS_FILE, " ha1=%.64s", ha1));
@@ -354,6 +371,7 @@ PJ_DEF(void) pjsip_auth_create_digestSHA256(pj_str_t *result,
     PJ_UNUSED_ARG(cred_info);
     PJ_UNUSED_ARG(method);
 #endif
+    return PJ_SUCCESS;
 }
 
 
@@ -408,6 +426,7 @@ static pj_status_t respond_digest( pj_pool_t *pool,
 {
     const pj_str_t pjsip_AKAv1_MD5_STR = { "AKAv1-MD5", 9 };
     pj_bool_t algo_sha256 = PJ_FALSE;
+    pj_status_t status = PJ_SUCCESS;
 
     /* Check if algo is sha256 */
 #if PJSIP_AUTH_HAS_DIGEST_SHA256
@@ -452,14 +471,14 @@ static pj_status_t respond_digest( pj_pool_t *pool,
 	else {
 	    /* Convert digest to string and store in chal->response. */
 	    if (algo_sha256) {
-		pjsip_auth_create_digestSHA256(
+		status = pjsip_auth_create_digestSHA256(
 					  &cred->response, &cred->nonce, NULL,
 					  NULL,  NULL, uri, &chal->realm,
 					  cred_info, method);
 	    } else {
-		pjsip_auth_create_digest( &cred->response, &cred->nonce, NULL,
-					  NULL,  NULL, uri, &chal->realm,
-					  cred_info, method);
+		status = pjsip_auth_create_digest( &cred->response, 
+					  &cred->nonce, NULL, NULL, NULL, uri, 
+					  &chal->realm, cred_info, method);
 	    }
 	}
 
@@ -486,18 +505,18 @@ static pj_status_t respond_digest( pj_pool_t *pool,
 	else {
 	    /* Convert digest to string and store in chal->response. */
 	    if (algo_sha256) {
-		pjsip_auth_create_digestSHA256(
+		status = pjsip_auth_create_digestSHA256(
 					  &cred->response, &cred->nonce,
 					  &cred->nc, &cred->cnonce,
 					  &pjsip_AUTH_STR, uri,
 					  &chal->realm, cred_info,
 					  method);
 	    } else {
-		pjsip_auth_create_digest( &cred->response, &cred->nonce,
-					  &cred->nc, &cred->cnonce,
-					  &pjsip_AUTH_STR, uri,
-					  &chal->realm, cred_info,
-					  method);
+		status = pjsip_auth_create_digest( &cred->response, 
+					  &cred->nonce, &cred->nc, 
+				          &cred->cnonce, &pjsip_AUTH_STR, 
+					  uri, &chal->realm, 
+					  cred_info, method);
 	    }
 	}
 
@@ -508,7 +527,7 @@ static pj_status_t respond_digest( pj_pool_t *pool,
 	return PJSIP_EINVALIDQOP;
     }
 
-    return PJ_SUCCESS;
+    return status;
 }
 
 #if defined(PJSIP_AUTH_QOP_SUPPORT) && PJSIP_AUTH_QOP_SUPPORT!=0
@@ -558,7 +577,7 @@ static void update_digest_session( pjsip_cached_auth *cached_auth,
     PJSIP_AUTH_CNONCE_USE_DIGITS_ONLY!=0
 	if (pj_strchr(&cached_auth->cnonce, '-')) {
 	    /* remove hyphen character. */
-	    int w, r, len = pj_strlen(&cached_auth->cnonce);
+	    pj_size_t w, r, len = pj_strlen(&cached_auth->cnonce);
 	    char *s = cached_auth->cnonce.ptr;
 
 	    w = r = 0;
@@ -802,7 +821,7 @@ PJ_DEF(pj_status_t) pjsip_auth_clt_set_prefs(pjsip_auth_clt_sess *sess,
     pj_memcpy(&sess->pref, p, sizeof(*p));
     pj_strdup(sess->pool, &sess->pref.algorithm, &p->algorithm);
     //if (sess->pref.algorithm.slen == 0)
-    //	sess->pref.algorithm = pj_str("md5");
+    //	sess->pref.algorithm = pj_str("MD5");
 
     return PJ_SUCCESS;
 }
@@ -1412,6 +1431,11 @@ PJ_DEF(pj_status_t) pjsip_auth_clt_reinit_req(	pjsip_auth_clt_sess *sess,
 	/* Process next header. */
 	hdr = hdr->next;
 	auth_cnt++;
+
+#if defined(PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER) && \
+	    PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER==0
+	break;
+#endif
     }
 
     /* Check if challenge is present */

@@ -1242,6 +1242,19 @@ PJ_INLINE(pjsip_cfg_t*) pjsip_cfg(void)
 #   define PJSIP_REGISTER_CLIENT_ADD_XUID_PARAM	0
 #endif
 
+
+/**
+ * Allow client to send refresh registration when the registrar sent a Contact
+ * header with expire parameter 0 in the 200/OK REGISTER response.
+ * Refer to https://github.com/pjsip/pjproject/pull/2809 for more info.
+ *
+ * Default is 1.
+ */
+#ifndef PJSIP_REGISTER_ALLOW_EXP_REFRESH
+#   define PJSIP_REGISTER_ALLOW_EXP_REFRESH	1
+#endif
+
+
 /**
  * Maximum size of pool allowed for auth client session in pjsip_regc.
  * After the size exceeds because of Digest authentication processing,
@@ -1265,6 +1278,18 @@ PJ_INLINE(pjsip_cfg_t*) pjsip_cfg(void)
  */
 #ifndef PJSIP_AUTH_CNONCE_USE_DIGITS_ONLY
 #   define PJSIP_AUTH_CNONCE_USE_DIGITS_ONLY	1
+#endif
+
+/**
+ * Allow client to send multiple Authorization header when receiving multiple 
+ * WWW-Authenticate header fields. If this is disabled, the stack will send
+ * Authorization header field containing credentials that match the
+ * topmost header field.
+ *
+ * Default is 0
+ */
+#ifndef PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER
+#   define PJSIP_AUTH_ALLOW_MULTIPLE_AUTH_HEADER 0
 #endif
 
 /*****************************************************************************
@@ -1444,6 +1469,25 @@ PJ_INLINE(pjsip_cfg_t*) pjsip_cfg(void)
 #ifndef PJSIP_INV_ACCEPT_UNKNOWN_BODY
 #   define PJSIP_INV_ACCEPT_UNKNOWN_BODY    PJ_FALSE
 #endif
+
+/** 
+ * Specify whether to check if UPDATE sent in EARLY state has already
+ * completed SDP negotiation using reliable provisional responses, as
+ * specified in RFC3311 section 5.1.
+ *
+ * By default, the library will disable the check and allow the UPDATE
+ * to be sent for backward compatibility.
+ *
+ * Default: 0 (disabled)
+ */
+#ifndef PJSIP_INV_UPDATE_EARLY_CHECK_RELIABLE
+#   define PJSIP_INV_UPDATE_EARLY_CHECK_RELIABLE    0
+#endif
+
+/**
+ * Dump configuration to log with verbosity equal to info(3).
+ */
+PJ_DECL(void) pjsip_dump_config(void);
 
 PJ_END_DECL
 

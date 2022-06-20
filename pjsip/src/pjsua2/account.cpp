@@ -76,7 +76,7 @@ pjmedia_rtcp_fb_setting RtcpFbConfig::toPj() const
 
     pj_bzero(&setting, sizeof(setting));
     setting.dont_use_avpf   = this->dontUseAvpf;
-    setting.cap_count	    = this->caps.size();
+    setting.cap_count	    = (unsigned)this->caps.size();
     for (unsigned i = 0; i < setting.cap_count; ++i) {
 	setting.caps[i] = this->caps[i].toPj();
     }
@@ -166,12 +166,12 @@ pjsua_srtp_opt SrtpOpt::toPj() const
 
     pj_bzero(&opt, sizeof(opt));
 
-    opt.crypto_count = this->cryptos.size();
+    opt.crypto_count = (unsigned)this->cryptos.size();
     for (unsigned i = 0; i < opt.crypto_count; ++i) {
 	opt.crypto[i] = this->cryptos[i].toPj();
     }
 
-    opt.keying_count = this->keyings.size();
+    opt.keying_count = (unsigned)this->keyings.size();
     for (unsigned i = 0; i < opt.keying_count; ++i) {
 	opt.keying[i] = (pjmedia_srtp_keying_method)this->keyings[i];
     }
@@ -463,6 +463,9 @@ void AccountMediaConfig::readObject(const ContainerNode &node)
     NODE_READ_NUM_T   ( this_node, pjsua_ipv6_use, ipv6Use);
     NODE_READ_OBJ     ( this_node, transportConfig);
     NODE_READ_BOOL    ( this_node, rtcpMuxEnabled);
+    NODE_READ_BOOL    ( this_node, useLoopMedTp);
+    NODE_READ_BOOL    ( this_node, enableLoopback);
+    NODE_READ_BOOL    ( this_node, rtcpXrEnabled);
 }
 
 void AccountMediaConfig::writeObject(ContainerNode &node) const
@@ -478,6 +481,9 @@ void AccountMediaConfig::writeObject(ContainerNode &node) const
     NODE_WRITE_NUM_T   ( this_node, pjsua_ipv6_use, ipv6Use);
     NODE_WRITE_OBJ     ( this_node, transportConfig);
     NODE_WRITE_BOOL    ( this_node, rtcpMuxEnabled);
+    NODE_WRITE_BOOL    ( this_node, useLoopMedTp);
+    NODE_WRITE_BOOL    ( this_node, enableLoopback);
+    NODE_WRITE_BOOL    ( this_node, rtcpXrEnabled);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -575,6 +581,7 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
     ret.unreg_timeout		= regConfig.unregWaitMsec;
     ret.reg_use_proxy		= regConfig.proxyUse;
     ret.reg_contact_params	= str2Pj(regConfig.contactParams);
+    ret.reg_contact_uri_params	= str2Pj(regConfig.contactUriParams);
     for (i=0; i<regConfig.headers.size(); ++i) {
 	pj_list_push_back(&ret.reg_hdr_list, &regConfig.headers[i].toPj());
     }
@@ -684,6 +691,9 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
     ret.ipv6_media_use		= mediaConfig.ipv6Use;
     ret.enable_rtcp_mux		= mediaConfig.rtcpMuxEnabled;
     ret.rtcp_fb_cfg		= mediaConfig.rtcpFbConfig.toPj();
+    ret.use_loop_med_tp		= mediaConfig.useLoopMedTp;
+    ret.enable_loopback		= mediaConfig.enableLoopback;
+    ret.enable_rtcp_xr		= mediaConfig.rtcpXrEnabled;
 
     // AccountVideoConfig
     ret.vid_in_auto_show	= videoConfig.autoShowIncoming;
@@ -725,6 +735,7 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
     regConfig.unregWaitMsec	= prm.unreg_timeout;
     regConfig.proxyUse		= prm.reg_use_proxy;
     regConfig.contactParams	= pj2Str(prm.reg_contact_params);
+    regConfig.contactUriParams	= pj2Str(prm.reg_contact_uri_params);
     regConfig.headers.clear();
     hdr = prm.reg_hdr_list.next;
     while (hdr != &prm.reg_hdr_list) {
@@ -873,6 +884,9 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
     mediaConfig.ipv6Use		= prm.ipv6_media_use;
     mediaConfig.rtcpMuxEnabled	= PJ2BOOL(prm.enable_rtcp_mux);
     mediaConfig.rtcpFbConfig.fromPj(prm.rtcp_fb_cfg);
+    mediaConfig.useLoopMedTp	= PJ2BOOL(prm.use_loop_med_tp);
+    mediaConfig.enableLoopback	= PJ2BOOL(prm.enable_loopback);
+    mediaConfig.rtcpXrEnabled	= PJ2BOOL(prm.enable_rtcp_xr);
 
     // AccountVideoConfig
     videoConfig.autoShowIncoming 	= PJ2BOOL(prm.vid_in_auto_show);
@@ -964,6 +978,11 @@ void Account::create(const AccountConfig &acc_cfg,
     pjsua_acc_config pj_acc_cfg;
     
     acc_cfg.toPj(pj_acc_cfg);
+
+    for (unsigned i = 0; i < pj_acc_cfg.cred_count; ++i) {
+	    pjsip_cred_info *dst = &pj_acc_cfg.cred_info[i];
+	    dst->ext.aka.cb = (pjsip_cred_cb)Endpoint::on_auth_create_aka_response_callback;
+    }
     pj_acc_cfg.user_data = (void*)this;
     PJSUA2_CHECK_EXPR( pjsua_acc_add(&pj_acc_cfg, make_default, &id) );
 }
