@@ -3001,9 +3001,24 @@ typedef struct pjsua_transport_config
      * port number specified in \a port. Note that this setting is only
      * applicable when the start port number is non zero.
      *
+     * Example: \a port=5000, \a port_range=4
+     * - Available ports: 5000, 5001, 5002, 5003, 5004 (SIP transport)
+     * 
+     * Available ports are in the range of [\a port, \a port + \a port_range]. 
+     * 
      * Default value is zero.
      */
     unsigned		port_range;
+
+    /**
+     * Specify whether to randomly pick the starting port number from
+     * the range of [\a port, \a port + \a port_range]. This setting is
+     * used only if both port and port_range are non-zero, and only
+     * applicable for the port selection of UDP and loop media transport.
+     * 
+     * Default is PJ_FALSE.
+     */
+    pj_bool_t		randomize_port;
 
     /**
      * Optional address to advertise as the address of this transport.
@@ -3693,6 +3708,17 @@ typedef struct pjsua_acc_config
      */
     pj_str_t	    reg_contact_params;
 
+    /**
+     * Additional URI parameters that will be appended in the Contact URI
+     * for this account. This will only affect REGISTER requests and
+     * will be appended after \a contact_uri_params;
+     *
+     * The parameters should be preceeded by semicolon, and all strings must
+     * be properly escaped. Example:
+     *	 ";my-param=X;another-param=Hi%20there"
+     */
+    pj_str_t	    reg_contact_uri_params;
+
     /** 
      * The optional custom SIP headers to be put in the presence
      * subscription request.
@@ -4071,6 +4097,12 @@ typedef struct pjsua_acc_config
 
     /**
      * Media transport config.
+     * 
+     * For \a port and \a port_range settings, RTCP port is selected as 
+     * RTP port+1.
+     * Example: \a port=5000, \a port_range=4
+     * - Available ports: 5000, 5002, 5004 (Media/RTP transport)
+     *                    5001, 5003, 5005 (Media/RTCP transport)
      */
     pjsua_transport_config rtp_cfg;
 
@@ -4296,6 +4328,13 @@ typedef struct pjsua_acc_config
      * RTCP Feedback configuration.
      */
     pjmedia_rtcp_fb_setting rtcp_fb_cfg;
+
+    /**
+     * Enable RTCP Extended Report (RTCP XR).
+     *
+     * Default: PJMEDIA_STREAM_ENABLE_XR
+     */
+    pj_bool_t		enable_rtcp_xr;
 
 } pjsua_acc_config;
 
@@ -6030,7 +6069,7 @@ PJ_DECL(pj_status_t) pjsua_call_get_stream_info(pjsua_call_id call_id,
  *
  * @param call_id	The call identification.
  * @param med_idx	Media stream index.
- * @param psi		To be filled with the stream statistic.
+ * @param stat		To be filled with the stream statistic.
  *
  * @return		PJ_SUCCESS on success or the appropriate error.
  */
@@ -6817,21 +6856,21 @@ struct pjsua_media_config
     /**
      * Jitter buffer minimum prefetch delay in msec.
      *
-     * Default: -1 (to use default stream settings, currently 60 msec)
+     * Default: -1 (to use default stream settings, currently codec ptime)
      */
     int			jb_min_pre;
     
     /**
      * Jitter buffer maximum prefetch delay in msec.
      *
-     * Default: -1 (to use default stream settings, currently 240 msec)
+     * Default: -1 (to use default stream settings, currently 80% of jb_max)
      */
     int			jb_max_pre;
 
     /**
      * Set maximum delay that can be accomodated by the jitter buffer msec.
      *
-     * Default: -1 (to use default stream settings, currently 360 msec)
+     * Default: -1 (to use default stream settings, currently 500 msec)
      */
     int			jb_max;
 
@@ -7390,6 +7429,7 @@ PJ_DECL(pj_status_t) pjsua_conf_get_signal_level(pjsua_conf_port_id slot,
  *			WAV files are supported, and the WAV file MUST be
  *			formatted as 16bit PCM mono/single channel (any
  *			clock rate is supported).
+ *			Filename's length must be smaller than PJ_MAXPATH.
  * @param options	Optional option flag. Application may specify
  *			PJMEDIA_FILE_NO_LOOP to prevent playback loop.
  * @param p_id		Pointer to receive player ID.
@@ -7408,6 +7448,8 @@ PJ_DECL(pj_status_t) pjsua_player_create(const pj_str_t *filename,
  * @param file_names	Array of file names to be added to the play list.
  *			Note that the files must have the same clock rate,
  *			number of channels, and number of bits per sample.
+ *			Each filename's length must be smaller than
+ * 			PJ_MAXPATH.
  * @param file_count	Number of files in the array.
  * @param label		Optional label to be set for the media port.
  * @param options	Optional option flag. Application may specify
@@ -7447,7 +7489,7 @@ PJ_DECL(pj_status_t) pjsua_player_get_port(pjsua_player_id id,
  * Get additional info about the file player. This operation is not valid
  * for playlist.
  *
- * @param port		The file player ID.
+ * @param id		The file player ID.
  * @param info		The info.
  *
  * @return		PJ_SUCCESS on success or the appropriate error code.
@@ -7502,6 +7544,7 @@ PJ_DECL(pj_status_t) pjsua_player_destroy(pjsua_player_id id);
  * @param filename	Output file name. The function will determine the
  *			default format to be used based on the file extension.
  *			Currently ".wav" is supported on all platforms.
+ *			Filename's length must be smaller than PJ_MAXPATH.
  * @param enc_type	Optionally specify the type of encoder to be used to
  *			compress the media, if the file can support different
  *			encodings. This value must be zero for now.
@@ -7606,6 +7649,10 @@ PJ_DECL(pj_status_t) pjsua_get_snd_dev(int *capture_dev,
  * Select or change sound device. Application may call this function at
  * any time to replace current sound device.
  *
+ * Note that this function will always try to open the sound device
+ * immediately. If immediate open is not preferred, use pjsua_set_snd_dev2()
+ * with PJSUA_SND_DEV_NO_IMMEDIATE_OPEN flag.
+ *
  * @param capture_dev   Device ID of the capture device.
  * @param playback_dev	Device ID of the playback device.
  *
@@ -7615,13 +7662,23 @@ PJ_DECL(pj_status_t) pjsua_set_snd_dev(int capture_dev,
 				       int playback_dev);
 
 /**
+ * Get sound device parameters such as playback & capture device IDs and mode.
+ *
+ * @param snd_param	On return, it is set with sound device param.
+ *
+ * @return		PJ_SUCCESS on success, or the appropriate error code.
+ */
+PJ_DECL(pj_status_t) pjsua_get_snd_dev2(pjsua_snd_dev_param *snd_param);
+
+
+/**
  * Select or change sound device according to the specified param.
  *
  * @param snd_param	Sound device param. 
  *
  * @return		PJ_SUCCESS on success, or the appropriate error code.
  */
-PJ_DECL(pj_status_t) pjsua_set_snd_dev2(pjsua_snd_dev_param *snd_param);
+PJ_DECL(pj_status_t) pjsua_set_snd_dev2(const pjsua_snd_dev_param *snd_param);
 
 
 /**
@@ -7784,7 +7841,7 @@ typedef struct pjsua_ext_snd_dev pjsua_ext_snd_dev;
 /**
  * Create an extra sound device and register it to conference bridge.
  *
- * @param snd_param	Sound device port param. Currently this only supports
+ * @param param	Sound device port param. Currently this only supports
  *			mono channel, so channel count must be set to 1.
  * @param p_snd		The extra sound device instance.
  *
@@ -7797,7 +7854,7 @@ PJ_DECL(pj_status_t) pjsua_ext_snd_dev_create(pjmedia_snd_port_param *param,
 /**
  * Destroy an extra sound device and unregister it from conference bridge.
  *
- * @param p_snd		The extra sound device instance.
+ * @param snd		The extra sound device instance.
  *
  * @return		PJ_SUCCESS on success or the appropriate error code.
  */
@@ -7939,6 +7996,31 @@ pjsua_media_transports_attach( pjsua_media_transport tp[],
 /*
  * Video devices API
  */
+
+
+/**
+ * Controls whether PJSUA-LIB should not initialize video device subsystem
+ * in the PJSUA initialization. The video device subsystem initialization
+ * may need to open cameras to enumerates available cameras and their
+ * capabilities, which may not be preferable for some applications because
+ * it may trigger privacy-alert/permission notification on application startup
+ * (e.g: on Android app).
+ *
+ * If this is set, later application should manually initialize video device
+ * subsystem when it needs to use any video devices (camera and renderer),
+ * i.e: by invoking pjmedia_vid_dev_subsys_init() for PJSUA or
+ * VidDevManager::initSubsys() for PJSUA2.
+ *
+ * Note that pjmedia_vid_dev_subsys_init() should not be called multiple
+ * times (unless each has corresponding pjmedia_vid_dev_subsys_shutdown()),
+ * while VidDevManager::initSubsys() is safe to be called multiple times.
+ *
+ * Default: 0 (no)
+ */
+#ifndef PJSUA_DONT_INIT_VID_DEV_SUBSYS
+#   define PJSUA_DONT_INIT_VID_DEV_SUBSYS	0
+#endif
+
 
 /**
  * Get the number of video devices installed in the system.
@@ -8210,7 +8292,7 @@ typedef struct pjsua_vid_win_info
 /**
  * Enumerates all video windows.
  *
- * @param id		Array of window ID to be initialized.
+ * @param wids		Array of window ID to be initialized.
  * @param count		On input, specifies max elements in the array.
  *			On return, it contains actual number of elements
  *			that have been initialized.
@@ -8518,6 +8600,20 @@ PJ_DECL(pj_status_t) pjsua_vid_conf_connect(pjsua_conf_port_id source,
 PJ_DECL(pj_status_t) pjsua_vid_conf_disconnect(pjsua_conf_port_id source,
 					       pjsua_conf_port_id sink);
 
+
+/**
+ * Update or refresh port states from video port info. Some port may
+ * change its port info in the middle of a session, for example when
+ * a video stream decoder learns that incoming video size or frame rate
+ * has changed, video conference needs to be informed to update its
+ * internal states.
+ *
+ * @param port_id	The slot id of the port to be updated.
+ *
+ * @return		PJ_SUCCESS on success, or the appropriate error
+ *			code.
+ */
+PJ_DECL(pj_status_t) pjsua_vid_conf_update_port(pjsua_conf_port_id port_id);
 
 
 /* end of VIDEO API */

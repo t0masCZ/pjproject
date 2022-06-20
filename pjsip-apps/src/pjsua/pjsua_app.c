@@ -206,8 +206,7 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
 	}
 
 	/* Dump media state upon disconnected.
-	 * Moved to on_stream_destroyed() since media has been deactivated
-	 * upon disconnection.
+	 * Now pjsua_media_channel_deinit() automatically log the call dump.
 	 */
 	if (0) {
 	    PJ_LOG(5,(THIS_FILE, 
@@ -282,7 +281,9 @@ static void on_stream_destroyed(pjsua_call_id call_id,
 				unsigned stream_idx)
 {
     PJ_UNUSED_ARG(strm);
-    if (1) {
+
+    /* Now pjsua_media_channel_deinit() automatically log the call dump. */
+    if (0) {
 	PJ_LOG(5,(THIS_FILE, 
 		  "Call %d stream %d destroyed, dumping media stats..", 
 		  call_id, stream_idx));
@@ -307,8 +308,7 @@ static void on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id,
 	current_call = call_id;
 
 #ifdef USE_GUI
-    if (!showNotification(call_id))
-	return;
+    showNotification(call_id);
 #endif
 
     /* Start ringback */
@@ -401,6 +401,10 @@ static void on_call_audio_state(pjsua_call_info *ci, unsigned mi,
 	pjsua_conf_port_id call_conf_slot;
 
 	call_conf_slot = ci->media[mi].stream.aud.conf_slot;
+
+	/* Make sure conf slot is valid (e.g: media dir is not "inactive") */
+	if (call_conf_slot == PJSUA_INVALID_ID)
+	    return;
 
 	/* Loopback sound, if desired */
 	if (app_config.auto_loop) {
@@ -1173,8 +1177,12 @@ static void simple_registrar(pjsip_rx_data *rdata)
     srv->hvalue = pj_str("pjsua simple registrar");
     pjsip_msg_add_hdr(tdata->msg, (pjsip_hdr*)srv);
 
-    pjsip_endpt_send_response2(pjsua_get_pjsip_endpt(),
+    status = pjsip_endpt_send_response2(pjsua_get_pjsip_endpt(),
 		       rdata, tdata, NULL, NULL);
+	if (status != PJ_SUCCESS) {
+	    pjsip_tx_data_dec_ref(tdata);
+	}
+
 }
 
 /*****************************************************************************
@@ -1248,8 +1256,9 @@ static pj_bool_t default_mod_on_rx_request(pjsip_rx_data *rdata)
 	pjsip_msg_add_hdr(tdata->msg, h);
     }
 
-    pjsip_endpt_send_response2(pjsua_get_pjsip_endpt(), rdata, tdata, 
+    status = pjsip_endpt_send_response2(pjsua_get_pjsip_endpt(), rdata, tdata, 
 			       NULL, NULL);
+	    if (status != PJ_SUCCESS) pjsip_tx_data_dec_ref(tdata);
 
     return PJ_TRUE;
 }
@@ -2036,11 +2045,15 @@ static pj_status_t app_destroy(void)
 
     /* Close avi devs and ports */
     for (i=0; i<app_config.avi_cnt; ++i) {
-	if (app_config.avi[i].slot != PJSUA_INVALID_ID)
+	if (app_config.avi[i].slot != PJSUA_INVALID_ID) {
 	    pjsua_conf_remove_port(app_config.avi[i].slot);
+	    app_config.avi[i].slot = PJSUA_INVALID_ID;
+	}
 #if PJMEDIA_HAS_VIDEO && PJMEDIA_VIDEO_DEV_HAS_AVI
-	if (app_config.avi[i].dev_id != PJMEDIA_VID_INVALID_DEV)
+	if (app_config.avi[i].dev_id != PJMEDIA_VID_INVALID_DEV) {
 	    pjmedia_avi_dev_free(app_config.avi[i].dev_id);
+	    app_config.avi[i].dev_id = PJMEDIA_VID_INVALID_DEV;
+	}
 #endif
     }
 
@@ -2062,9 +2075,26 @@ static pj_status_t app_destroy(void)
 	app_config.ring_port = NULL;
     }
 
+    /* Close wav player */
+    if (app_config.wav_id != PJSUA_INVALID_ID) {
+	pjsua_player_destroy(app_config.wav_id);
+	app_config.wav_id = PJSUA_INVALID_ID;
+	app_config.wav_port = PJSUA_INVALID_ID;
+    }
+
+    /* Close wav recorder */
+    if (app_config.rec_id != PJSUA_INVALID_ID) {
+	pjsua_recorder_destroy(app_config.rec_id);
+	app_config.rec_id = PJSUA_INVALID_ID;
+	app_config.rec_port = PJSUA_INVALID_ID;
+    }
+
     /* Close tone generators */
     for (i=0; i<app_config.tone_count; ++i) {
-	pjsua_conf_remove_port(app_config.tone_slots[i]);
+	if (app_config.tone_slots[i] != PJSUA_INVALID_ID) {
+	    pjsua_conf_remove_port(app_config.tone_slots[i]);
+	    app_config.tone_slots[i] = PJSUA_INVALID_ID;
+	}
     }
 
     pj_pool_safe_release(&app_config.pool);
@@ -2084,6 +2114,8 @@ static pj_status_t app_destroy(void)
 
     /* Reset config */
     pj_bzero(&app_config, sizeof(app_config));
+    app_config.wav_id = PJSUA_INVALID_ID;
+    app_config.rec_id = PJSUA_INVALID_ID;
 
     if (use_cli) {    
 	app_config.use_cli = use_cli;

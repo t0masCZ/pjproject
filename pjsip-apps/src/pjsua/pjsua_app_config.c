@@ -649,6 +649,8 @@ static pj_status_t parse_args(int argc, char *argv[],
 	    return PJ_EINVAL;
 
 	case OPT_VERSION:   /* version */
+	    if (pj_log_get_level() < 3)
+	        pj_log_set_level(3);
 	    pj_dump_config();
 	    return PJ_EINVAL;
 
@@ -888,7 +890,7 @@ static pj_status_t parse_args(int argc, char *argv[],
 
 	case OPT_USERNAME:   /* Default authentication user */
 	    cur_acc->cred_info[cur_acc->cred_count].username = pj_str(pj_optarg);
-	    cur_acc->cred_info[cur_acc->cred_count].scheme = pj_str("Digest");
+	    cur_acc->cred_info[cur_acc->cred_count].scheme = pjsip_DIGEST_STR;
 	    break;
 
 	case OPT_REALM:	    /* Default authentication realm. */

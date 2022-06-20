@@ -604,12 +604,7 @@ static pj_status_t oh264_codec_open(pjmedia_vid_codec *codec,
     //TODO:
     // Apply "sprop-parameter-sets" here
 
-    rc = WelsCreateDecoder(&oh264_data->dec);
-    if (rc) {
-	PJ_LOG(4,(THIS_FILE, "Unable to create OpenH264 decoder"));
-	return PJMEDIA_CODEC_EFAILED;
-    }
-
+    /* Initialize decoder */
     rc = oh264_data->dec->Initialize (&sDecParam);
     if (rc) {
 	PJ_LOG(4,(THIS_FILE, "Decoder initialization failed, rc=%d", rc));
@@ -907,7 +902,7 @@ static int write_yuv(pj_uint8_t *buf,
     if (i < iHeight)
 	return -1;
 
-    return dst - buf;
+    return (int)(dst - buf);
 }
 
 static pj_status_t oh264_got_decoded_frame(pjmedia_vid_codec *codec,
@@ -1019,7 +1014,7 @@ static pj_status_t oh264_codec_decode(pjmedia_vid_codec *codec,
 	    pj_memcpy( oh264_data->dec_buf + whole_len,
 	               (pj_uint8_t*)packets[i].buf,
 	               packets[i].size);
-	    whole_len += packets[i].size;
+	    whole_len += (unsigned)packets[i].size;
 	}
 
     } else {
